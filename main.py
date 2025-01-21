@@ -4,7 +4,6 @@ import random
 import string
 import names
 import time
-import websocket as activation
 import secrets
 from datetime import datetime
 from fake_useragent import UserAgent
@@ -12,32 +11,13 @@ from bs4 import BeautifulSoup
 from colorama import init, Fore, Back, Style
 from eth_account import Account
 from eth_account.messages import encode_defunct
-from websocket import create_connection
+import asyncio
+import websockets
+import aiofiles
+import sys
+import os
 
 init(autoreset=True)
-
-def load_proxies():
-    try:
-        with open('proxies.txt', 'r') as f:
-            proxies = [line.strip() for line in f if line.strip()]
-            
-        valid_proxies = []
-        for proxy in proxies:
-            if not proxy.startswith(('http://', 'https://')):
-                proxy = f'http://{proxy}'
-            valid_proxies.append(proxy)
-            
-        if valid_proxies:
-            print(f"{Fore.GREEN}Loaded {len(valid_proxies)} proxies\n{Fore.RESET}")
-        return valid_proxies
-    except FileNotFoundError:
-        print(f"{Fore.YELLOW}proxies.txt not found, running without proxies\n{Fore.RESET}")
-        return []
-
-def get_random_proxy(proxies):
-    if not proxies:
-        return None
-    return random.choice(proxies)
 
 def log_message(account_num=None, total=None, message="", message_type="info"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -72,32 +52,26 @@ def create_wallet_signature(wallet, message):
     return signed_message.signature.hex()
 
 class TeneoAutoref:
-    def __init__(self, ref_code, proxy=None):
+    def __init__(self, ref_code):
         self.ua = UserAgent()
         self.session = requests.Session()
         self.ref_code = ref_code
-        self.proxy = proxy
-        if proxy:
-            self.proxies = {
-                'http': proxy,
-                'https': proxy
-            }
-        else:
-            self.proxies = None
+        self.socket = None
+        self.ping_interval = None
+        self.countdown_interval = None
+        self.potential_points = 0
+        self.countdown = "Calculating..."
+        self.points_total = 0
+        self.points_today = 0
     
     def make_request(self, method, url, **kwargs):
         try:
-            if self.proxies:
-                kwargs['proxies'] = self.proxies
-                kwargs['timeout'] = 60  
-            
+            #log_message(self.current_num, self.total, f"Making {method} request to {url}", "debug")
             response = requests.request(method, url, **kwargs)
             response.raise_for_status()
             return response
         except requests.exceptions.RequestException as e:
             log_message(self.current_num, self.total, f"Request failed: {str(e)}", "error")
-            if self.proxies:
-                log_message(self.current_num, self.total, f"Failed proxy: {self.proxy}", "error")
             return None
 
     def get_random_domain(self):
@@ -203,7 +177,8 @@ class TeneoAutoref:
             "code_challenge_method": None
         }
         
-        register_url = "https://node-b.teneo.pro/auth/v1/signup"
+        # Update URL to include redirect_to parameter
+        register_url = "https://node-b.teneo.pro/auth/v1/signup?redirect_to=https%3A%2F%2Fdashboard.teneo.pro%2Fauth%2Fverify"
         response = self.make_request('POST', register_url, headers=headers, json=register_data, timeout=60)
         
         if not response:
@@ -227,36 +202,54 @@ class TeneoAutoref:
         
         max_attempts = 5
         for attempt in range(max_attempts):
-            log_message(self.current_num, self.total, f"Attempting to get verification link...", "process")
-            response = self.make_request('GET', 'https://generator.email/inbox1/', headers=headers, cookies=cookies, timeout=60)
+            log_message(self.current_num, self.total, f"Attempting to get verification link (Attempt {attempt + 1}/{max_attempts})...", "process")
+            response = self.make_request('GET', 'https://generator.email/inbox1/', headers=headers, cookies=cookies, timeout=120)
             
             if not response:
+                log_message(self.current_num, self.total, "No response, waiting 30 seconds before retrying...", "debug")
+                time.sleep(30)  # Wait for 30 seconds before retrying
                 continue
                 
             soup = BeautifulSoup(response.text, 'html.parser')
-            verify_link = soup.find('a', {'class': 'es-button'})
+            verify_link = soup.find('a', string="Confirm Sign Up")
             
-            if verify_link and 'verify' in verify_link.get('href', ''):
+            if verify_link and 'href' in verify_link.attrs:
                 log_message(self.current_num, self.total, "Verification link found", "success")
                 return verify_link['href']
+
+            log_message(self.current_num, self.total, "Verification link not found, waiting 30 seconds before retrying...", "debug")
+            time.sleep(30)  # Wait for 30 seconds before retrying
 
         log_message(self.current_num, self.total, "Could not find verification link", "error")
         return None
 
     def verify_email(self, verification_url):
-        log_message(self.current_num, self.total, "Verifying email...", "process")
-        response = self.make_request('GET', verification_url, headers={'User-Agent': self.ua.random}, timeout=60)
+        log_message(self.current_num, self.total, f"Verifying email with URL: {verification_url}", "process")
         
-        if not response:
-            return False
+        try:
+            response = self.make_request('GET', verification_url, headers={'User-Agent': self.ua.random}, timeout=120)
             
-        success = 'Your email is verified' in response.text
+            if not response:
+                log_message(self.current_num, self.total, "Verification request failed", "error")
+                return False
+            
+            # Log the full response text for debugging
+            #log_message(self.current_num, self.total, f"Full verification response: {response.text}", "debug")
+            
+            # Cek respons dari API
+            #log_message(self.current_num, self.total, f"Verification response: {response.status_code} - {response.text[:200]}", "debug")  # Log hanya sebagian teks untuk menghindari terlalu panjang
+            
+            # Periksa apakah verifikasi berhasil berdasarkan status kode dan konten HTML
+            if response.status_code == 200 and "<title>Teneo Dashboard</title>" in response.text:
+                log_message(self.current_num, self.total, "Email verification successful", "success")
+                return True
+            else:
+                log_message(self.current_num, self.total, "Email verification failed", "error")
+                return False
         
-        if success:
-            log_message(self.current_num, self.total, "Email verification successful", "success")
-        else:
-            log_message(self.current_num, self.total, "Email verification failed", "error")
-        return success
+        except requests.exceptions.RequestException as e:
+            log_message(self.current_num, self.total, f"Verification request exception: {str(e)}", "error")
+            return False
 
     def login(self, email, password):
         log_message(self.current_num, self.total, "Attempting login...", "process")
@@ -337,72 +330,183 @@ class TeneoAutoref:
         except Exception as e:
             log_message(self.current_num, self.total, f"Error linking wallet: {str(e)}", "error")
             return None
-        
-    def connect_websocket(self, access_token):
-        log_message(self.current_num, self.total, "Waiting for activation...", "process")
-        ws_url = f"wss://secure.ws.teneo.pro/websocket?accessToken={access_token}&version=v0.2"
-        
-        while True:
-            try:
-                ws = activation.create_connection(
-                    ws_url,
-                    header={
-                        'Host': 'secure.ws.teneo.pro',
-                        'Upgrade': 'websocket', 
-                        'Connection': 'upgrade',
-                        'Origin': 'chrome-extension://emcclcoaglgcpoognfiggmhnhgabppkm',
-                        'User-Agent': self.ua.random
-                    },
-                    proxy=self.proxy if self.proxy else None,
-                    timeout=120
-                )
+
+    # Tambahan kode untuk WebSocket dan penyimpanan asinkron
+    async def read_file_async(self, file_path):
+        try:
+            async with aiofiles.open(file_path, 'r') as f:
+                return json.loads(await f.read())
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    async def write_file_async(self, file_path, data):
+        async with aiofiles.open(file_path, 'w') as f:
+            await f.write(json.dumps(data))
+
+    async def set_local_storage(self, data):
+        current_data = await self.read_file_async('localStorage.json')
+        new_data = {**current_data, **data}
+        await self.write_file_async('localStorage.json', new_data)
+
+    async def connect_websocket(self, access_token):
+        if self.socket:
+            return
+        version = "v0.2"
+        url = "wss://secure.ws.teneo.pro"
+        ws_url = f"{url}/websocket?accessToken={access_token}&version={version}"
+        self.socket = await websockets.connect(ws_url)
+
+        async def on_open():
+            connection_time = asyncio.get_event_loop().time()
+            await self.set_local_storage({'lastUpdated': connection_time})
+            log_message(self.current_num, self.total, f"WebSocket connected at {connection_time}", "info")
+            self.start_pinging()
+            await self.start_countdown_and_points()
+
+        async def on_message():
+            async for message in self.socket:
+                data = json.loads(message)
+                log_message(self.current_num, self.total, f"Received message from WebSocket: {data}", "info")
+                if 'pointsTotal' in data and 'pointsToday' in data:
+                    last_updated = asyncio.get_event_loop().time()
+                    await self.set_local_storage({
+                        'lastUpdated': last_updated,
+                        'pointsTotal': data['pointsTotal'],
+                        'pointsToday': data['pointsToday'],
+                    })
+                    self.points_total = data['pointsTotal']
+                    self.points_today = data['pointsToday']
                 
-                while True:
-                    ping_message = json.dumps({"type": "PING"})
-                    ws.send(ping_message)
-                    
-                    response = ws.recv()
-                    response_data = json.loads(response)
-                    
-                    if "message" in response_data and response_data["message"] == "Connected successfully":
-                        ws.close()
-                        log_message(self.current_num, self.total, "Activation successful", "success")
-                        return True
-                    
-            except Exception as e:
-                log_message(self.current_num, self.total, f"Activation error. Retrying, just wait...", "warning")
-                continue
-        
+                if 'message' in data:
+                    log_message(self.current_num, self.total, f"Pesan: {data['message']}", "info")
+                    if data['message'] == "Connected successfully":
+                        self.stop_pinging()
+                        await self.socket.close()  # Close the WebSocket connection
+                        log_message(self.current_num, self.total, "WebSocket disconnected after successful connection message", "info")
+                        return  # Exit the message loop
+
+        async def on_close():
+            self.socket = None
+            log_message(self.current_num, self.total, "WebSocket disconnected", "info")
+            self.stop_pinging()
+            await self.reconnect_websocket(access_token)  # Coba untuk reconnect
+
+        async def on_error(error):
+            log_message(self.current_num, self.total, f"WebSocket error: {error}", "error")
+            await self.reconnect_websocket(access_token)  # Coba untuk reconnect
+
+        await on_open()
+        try:
+            await on_message()
+        except Exception as e:
+            await on_error(e)
+        finally:
+            await on_close()
+
+    async def reconnect_websocket(self, access_token):
+        log_message(self.current_num, self.total, "Attempting to reconnect...", "warning")
+        await asyncio.sleep(5)
+        await self.connect_websocket(access_token)  # Coba untuk reconnect
+
+    def start_pinging(self):
+        self.stop_pinging()
+        self.ping_interval = asyncio.get_event_loop().call_later(10, lambda: asyncio.create_task(self.ping()))
+
+    def stop_pinging(self):
+        self.ping_interval = None
+
+    async def ping(self):
+        if self.socket and self.socket.open:  # Periksa apakah socket masih terbuka
+            await self.socket.send(json.dumps({'type': 'PING'}))
+            await self.set_local_storage({'lastPingDate': asyncio.get_event_loop().time()})
+        self.start_pinging()
+
+    async def update_countdown_and_points(self):
+        local_storage = await self.read_file_async('localStorage.json')
+        last_updated = local_storage.get('lastUpdated')
+        if (last_updated):
+            next_heartbeat = last_updated + 15 * 60
+            now = asyncio.get_event_loop().time()
+            diff = next_heartbeat - now
+
+            if diff > 0:
+                minutes = int(diff // 60)
+                seconds = int(diff % 60)
+                self.countdown = f"{minutes}m {seconds}s"
+
+                max_points = 25
+                time_elapsed = now - last_updated
+                time_elapsed_minutes = time_elapsed / 60
+                new_points = min(max_points, (time_elapsed_minutes / 15) * max_points)
+                new_points = round(new_points, 2)
+
+                if random.random() < 0.1:
+                    bonus = random.uniform(0, 2)
+                    new_points = min(max_points, new_points + bonus)
+                    new_points = round(new_points, 2)
+
+                self.potential_points = new_points
+            else:
+                self.countdown = "Calculating..."
+                self.potential_points = 25
+        else:
+            self.countdown = "Calculating..."
+            self.potential_points = 0
+
+        await self.set_local_storage({'potentialPoints': self.potential_points, 'countdown': self.countdown})
+
+    async def start_countdown_and_points(self):
+        if self.countdown_interval:
+            self.countdown_interval.cancel()
+        await self.update_countdown_and_points()
+        self.countdown_interval = asyncio.get_event_loop().call_later(1, lambda: asyncio.create_task(self.update_countdown_and_points()))
+    
+    # fungsi untuk menyimpan token ke file tokens.txt
+    async def save_access_token_to_file(self, access_token):
+        async with aiofiles.open('tokens.txt', 'a') as f:
+            await f.write(access_token + '\n')
+
+    async def start_running_node(self, access_token):
+        await self.save_access_token_to_file(access_token)
+        #print('Access token saved to tokens.txt')
+        await self.start_countdown_and_points()
+        await self.connect_websocket(access_token)
+
     def check_user_onboarded(self, access_token):
-        if not self.connect_websocket(access_token):
-            log_message(self.current_num, self.total, "Failed to activate", "error")
-            return False
-            
         log_message(self.current_num, self.total, "Checking account activate status...", "process")
         headers = {
-            'Accept': 'application/json, text/plain, */*',
-            'Authorization': f'Bearer {access_token}',
-            'Connection': 'keep-alive',
-            'Origin': 'https://dashboard.teneo.pro',
-            'Referer': 'https://dashboard.teneo.pro/',
-            'User-Agent': self.ua.random
+            'accept': 'application/json, text/plain, */*',
+            'authorization': f'Bearer {access_token}',
+            'connection': 'keep-alive',
+            'origin': 'https://dashboard.teneo.pro',
+            'referer': 'https://dashboard.teneo.pro/',
+            'user-agent': self.ua.random,
+            'accept-encoding': 'gzip, deflate, br, zstd',
+            'accept-language': 'en-GB,en;q=0.9',
+            'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-site'
         }
         
         max_attempts = 5
         for attempt in range(max_attempts):
             response = self.make_request('GET', 'https://api.teneo.pro/api/users/user-onboarded', headers=headers, timeout=60)
             
-            if not response:
-                continue
-                
-            data = response.json()
-            if data.get('success') == True:
-                log_message(self.current_num, self.total, "Account Activated! But still PENDING", "success")
-                log_message(self.current_num, self.total, f"{Fore.LIGHTYELLOW_EX}IMPORTANT: Run accounts with teneo-bot until 100HB for SUCCESS referral{Fore.RESET}", "success")
-                return True
-                
-            log_message(self.current_num, self.total, f"User not yet activated, Please wait...", "warning")
+            if response:
+                response_data = response.json()
+                if response_data.get('success') == True:
+                    log_message(self.current_num, self.total, "Account Activated! But still PENDING", "success")
+                    log_message(self.current_num, self.total, f"{Fore.LIGHTYELLOW_EX}IMPORTANT: Run accounts with teneo-bot until 100HB for SUCCESS referral{Fore.RESET}", "success")
+                    return True
+                else:
+                    log_message(self.current_num, self.total, f"Response: {response_data}", "debug")
             
+            log_message(self.current_num, self.total, f"User not yet activated, Please wait...", "warning")
+            time.sleep(20)
+
         log_message(self.current_num, self.total, "Failed to verify user activation", "error")
         return False
 
@@ -429,17 +533,21 @@ class TeneoAutoref:
         if "access_token" not in login_response:
             return None, "Login failed"
             
-        wallet = self.link_wallet(login_response["access_token"], email) 
+        access_token = login_response["access_token"]
+        wallet = self.link_wallet(access_token, email) 
         if not wallet:
             return None, "Wallet linking failed"
         
-        if not self.check_user_onboarded(login_response["access_token"]):
+        # Start running node with the access token from login
+        asyncio.run(self.start_running_node(access_token))
+
+        if not self.check_user_onboarded(access_token):
             return None, "Account active validation failed"
 
         return {
             "email": email,
             "password": password,
-            "access_token": login_response["access_token"],
+            "access_token": access_token,
             "wallet_private_key": wallet['private_key'],
             "wallet_address": wallet['address']
         }, "Success"
@@ -449,48 +557,45 @@ def main():
 {Fore.LIGHTCYAN_EX}╔═══════════════════════════════════════════╗
 ║            Teneo Autoreferral             ║
 ║       https://github.com/im-hanzou        ║
+║  Update by https://t.me/AirdropFamilyIDN  ║
 ╚═══════════════════════════════════════════╝{Style.RESET_ALL}
 """
     print(banner)    
     
-    ref_code = input(f"{Fore.LIGHTYELLOW_EX}Enter referral code: {Fore.RESET}")
+    ref_code = input(f"{Fore.LIGHTYELLOW_EX}Enter referral code, example : HyPYD: {Fore.RESET}")
     count = int(input(f"{Fore.LIGHTYELLOW_EX}How many referrals?: {Fore.RESET}"))
     
-    proxies = load_proxies()
-    
     successful = 0
+    
+    if not os.path.exists("accounts.txt"):
+        with open("accounts.txt", "w") as f:
+            pass
     
     with open("accounts.txt", "a") as f:
         for i in range(count):
             print(f"{Fore.LIGHTWHITE_EX}{'-'*85}")
             log_message(i+1, count, "Starting new referral process", "debug")
 
-            current_proxy = get_random_proxy(proxies) if proxies else None
-            generator = TeneoAutoref(ref_code, proxy=current_proxy)
+            generator = TeneoAutoref(ref_code)
             account, message = generator.create_account(i+1, count)
             
             if account:
                 with open("accounts.txt", "a") as f:
-                    f.write(f"Email: {account['email']}\n")
-                    f.write(f"Password: {account['password']}\n")
-                    f.write(f"Token: {account['access_token']}\n")
-                    f.write(f"Wallet Private Key: {account['wallet_private_key']}\n")
-                    f.write(f"Wallet Address: {account['wallet_address']}\n")
-                    f.write(f"Points: 51000\n")
+                    f.write(f"Email     : {account['email']}\n")
+                    f.write(f"Password  : {account['password']}\n")
+                    f.write(f"Privatekey: {account['wallet_private_key']}\n")
+                    f.write(f"Address   : {account['wallet_address']}\n")
+                    f.write(f"Points    : 51000\n")
                     f.write("-" * 85 + "\n")
                     f.flush()
                 successful += 1
                 log_message(i+1, count, "Account created successfully!", "debug")
-                log_message(i+1, count, f"Email: {account['email']}", "success")
-                log_message(i+1, count, f"Password: {account['password']}", "success")
-                log_message(i+1, count, f"Wallet Address: {account['wallet_address']}", "success")
-                log_message(i+1, count, f"Points: 51000", "success")
-                log_message(i+1, count, f"{Fore.LIGHTRED_EX}Link Bot: https://github.com/im-hanzou/teneo-bot{Fore.RESET}", "success") 
+                log_message(i+1, count, f"Points        : 51000", "success")
+                log_message(i+1, count, f"{Fore.LIGHTRED_EX}Link Bot : https://github.com/im-hanzou/teneo-bot{Fore.RESET}", "success")
+                log_message(i+1, count, f"{Fore.LIGHTRED_EX}Update by: https://t.me/AirdropFamilyIDN{Fore.RESET}", "success")
                 log_message(i+1, count, f"{Fore.LIGHTRED_EX}Please ensure that all successfully referred accounts run teneo-bot{Fore.RESET}", "success")  
             else:
                 log_message(i+1, count, f"Failed: {message}", "error")
-                if generator.proxy:
-                    log_message(i+1, count, f"Failed proxy: {generator.proxy}", "error")
     
     print(f"{Fore.MAGENTA}\n[*] Process completed!{Fore.RESET}")
     print(f"{Fore.GREEN}[*] Successfully created {successful} out of {count} accounts{Fore.RESET}")
