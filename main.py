@@ -389,11 +389,11 @@ class TeneoAutoref:
             self.socket = None
             log_message(self.current_num, self.total, "WebSocket disconnected", "info")
             self.stop_pinging()
-            await self.reconnect_websocket(access_token)  # Coba untuk reconnect
+            # Removed reconnect_websocket call
 
         async def on_error(error):
             log_message(self.current_num, self.total, f"WebSocket error: {error}", "error")
-            await self.reconnect_websocket(access_token)  # Coba untuk reconnect
+            # Removed reconnect_websocket call
 
         await on_open()
         try:
@@ -402,11 +402,6 @@ class TeneoAutoref:
             await on_error(e)
         finally:
             await on_close()
-
-    async def reconnect_websocket(self, access_token):
-        log_message(self.current_num, self.total, "Attempting to reconnect...", "warning")
-        await asyncio.sleep(5)
-        await self.connect_websocket(access_token)  # Coba untuk reconnect
 
     def start_pinging(self):
         self.stop_pinging()
