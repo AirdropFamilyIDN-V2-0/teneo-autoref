@@ -122,24 +122,29 @@ class TeneoAutoref:
         headers = {
             "accept": "application/json, text/plain, */*",
             "content-type": "application/json",
-            "x-api-key": "OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjA",
+            "x-api-key": "OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjB",
             "user-agent": self.ua.random,
-            'Origin': 'https://dashboard.teneo.pro',
-            'Referer': 'https://dashboard.teneo.pro/'
+            "origin": "https://dashboard.teneo.pro",
+            "referer": "https://dashboard.teneo.pro/"
         }
+        
+        # Log the email and headers for debugging
+        #log_message(self.current_num, self.total, f"Checking email: {email}", "debug")
+        #log_message(self.current_num, self.total, f"Request Headers: {headers}", "debug")
+        
         check_url = "https://auth.teneo.pro/api/check-user-exists"
         response = self.make_request('POST', check_url, headers=headers, json={"email": email}, timeout=60)
         
-        if not response:
-            return True
-            
-        exists = response.json().get("exists", True)
-        
-        if exists:
-            log_message(self.current_num, self.total, "Email already registered", "error")
+        if response and response.status_code == 200:
+            exists = response.json().get("exists", False)
+            if exists:
+                log_message(self.current_num, self.total, "Email already registered", "error")
+            else:
+                log_message(self.current_num, self.total, "Email is available", "success")
+            return exists
         else:
-            log_message(self.current_num, self.total, "Email is available", "success")
-        return exists
+            log_message(self.current_num, self.total, "Failed to check email availability", "error")
+            return True
 
     def generate_valid_credentials(self):
         max_attempts = 5
@@ -256,7 +261,7 @@ class TeneoAutoref:
         headers = {
             'accept': 'application/json, text/plain, */*',
             'content-type': 'application/json',
-            'x-api-key': 'OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjA',
+            'x-api-key': 'OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjB',
             'user-agent': self.ua.random,
             'Origin': 'https://dashboard.teneo.pro',
             'Referer': 'https://dashboard.teneo.pro/'
