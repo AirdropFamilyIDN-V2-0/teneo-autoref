@@ -5,3 +5,4 @@ beautifulsoup4
 fake-useragent
 colorama
 eth-account
+websockets
