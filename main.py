@@ -50,19 +50,15 @@ class Captcha:
     def res_api(self, api_id):
         params = f"?key={self.key}&action=get&id={api_id}&json=1"
         try:
-            response = requests.get(f"{self.url}res.php{params}")
+            response = requests.get(f"{self.url}res.php{params}", timeout=60)  # Increase timeout
             response.raise_for_status()
-           # print(f"Response content: {response.text}")
             return response.json()
         except requests.exceptions.RequestException as e:
             print(f"Error fetching captcha result: {e}")
             return None
-        except ValueError as e:
-            print(f"Error decoding JSON response: {e}")
-            return None
 
     def solving_progress(self, xr, tmr, cap):
-        symbols = [' ─ ', ' / ', ' │ ', ' \ ']
+        symbols = [' ─ ', ' / ', ' │ ', ' ']
         a = 0
         for _ in range(tmr * 2):  # Kurangi waktu tunggu untuk mempercepat proses
             print(f"Bypass {cap} {xr}%{symbols[a % 4]}\r", end="")
@@ -75,6 +71,9 @@ class Captcha:
     def get_result(self, data, method, header=None):
         cap = self.filter_method(data.split('method=')[1].split('&')[0])
         get_res = self.in_api(data, method, header)
+
+        # Log the response from in_api
+        logging.info(f"[*] in_api response: {get_res}")
 
         if not get_res or not get_res.get("status"):
             msg = get_res.get("request", "Something went wrong") if get_res else "No response"
@@ -142,8 +141,30 @@ class Captcha:
         return self.get_result(data, "GET")
 
     def turnstile(self, sitekey, pageurl):
+        """Solves a Turnstile CAPTCHA via the service."""
         data = urlencode({"method": "turnstile", "sitekey": sitekey, "pageurl": pageurl})
-        return self.get_result(data, "GET")
+        result = self.get_result(data, "GET")
+
+        # Log the raw result received
+        logging.info(f"[*] turnstile raw result: {result}")
+
+        # Check if the result is valid
+        if result is None:
+            raise ValueError("Failed to solve CAPTCHA. No valid response received.")
+
+        # If the result is a string, we may need to parse it
+        if isinstance(result, str):
+            # Assuming the result is a base64 encoded string or similar, handle accordingly
+            # You may need to decode or process the string based on your API's documentation
+            # For now, let's just log it and return it as is
+            return result  # Or process it further if needed
+
+        # Check if 'status' is in the result and equals 1
+        if 'status' not in result or result['status'] != 1:
+            raise ValueError("CAPTCHA solving failed. No valid request ID returned.")
+
+        # Return the request ID if everything is valid
+        return result.get('request')
 
     def ocr(self, img):
         data = f"method=base64&body={img}"
@@ -254,7 +275,7 @@ async def register_account(email, password, invited_by, api_key, gunakan_proxy):
 
     # Create an instance of the Captcha class with the API key
     captcha_solver = Captcha(api_key)
-    captcha_response = captcha_solver.turnstile(sitekey, siteurlregister)  # Remove await
+    captcha_response = captcha_solver.turnstile(sitekey, siteurlregister)
 
     if not captcha_response:
         logging.error("[!] CAPTCHA solving failed, cannot proceed with registration.")
@@ -275,13 +296,16 @@ async def register_account(email, password, invited_by, api_key, gunakan_proxy):
     chosen_proxy = random.choice(proxies) if proxies and gunakan_proxy else None
     proxy_dict = {"http": chosen_proxy, "https": chosen_proxy} if chosen_proxy else None
 
-    response = requests.post(url, json=payload, headers=headers, proxies=proxy_dict if gunakan_proxy else None)
-    
-    try:
-        return response.json()
-    except requests.exceptions.JSONDecodeError:
-        logging.error("[!] Failed to parse JSON response.")
-        return {"error": "Invalid response"}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers, proxy=proxy_dict["http"] if gunakan_proxy and proxy_dict else None) as response:
+            logging.info(f"[*] Response status code: {response.status}")
+            logging.info(f"[*] Response text: {await response.text()}")
+
+            try:
+                return await response.json()
+            except aiohttp.ClientError as e:
+                logging.error("[!] Failed to parse JSON response.")
+                return {"error": "Invalid response"}
 
 async def register_verification_code(token, verification_code, gunakan_proxy):
     url = "https://auth.teneo.pro/api/verify-email"
