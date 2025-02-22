@@ -37,7 +37,7 @@ cd teneo-autoref
 ```
 - Install requirements, Windows and Termux:
 ```bash
-pip install -r requirements.txt
+pip install beautifulsoup4 faker python-dotenv curl-cffi names websockets eth-account aiohttp
 ```
 - Unix:
 ```bash
