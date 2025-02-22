@@ -1,6 +1,0 @@
-beautifulsoup4
-faker
-python-dotenv
-curl-cffi
-websockets
-eth-account
