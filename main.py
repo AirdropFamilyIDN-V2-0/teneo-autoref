@@ -1,41 +1,340 @@
-import requests
-import json
 import random
 import string
-import names
-import time
-import secrets
-from datetime import datetime
-from fake_useragent import UserAgent
+import asyncio
+import logging
 from bs4 import BeautifulSoup
-from colorama import init, Fore, Back, Style
+from faker import Faker
+import re
+import names
+from dotenv import load_dotenv
+import os
+from curl_cffi import requests
+import time
+from urllib.parse import urlencode
+import websockets
 from eth_account import Account
 from eth_account.messages import encode_defunct
-import asyncio
-import websockets
-import aiofiles
-import sys
-import os
+import secrets
+import logging
+import aiohttp
+import json
 
-init(autoreset=True)
+class Captcha:
+    def __init__(self, api_key):
+        self.url = 'https://api.sctg.xyz/'
+        self.key = api_key + "|SOFTID6953912161" if api_key else None
+        self.provider = "Xevil"
 
-def log_message(account_num=None, total=None, message="", message_type="info"):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    account_status = f"{account_num}/{total}" if account_num and total else ""
-    
-    colors = {
-        "info": Fore.LIGHTWHITE_EX,
-        "success": Fore.LIGHTGREEN_EX,
-        "error": Fore.LIGHTRED_EX,
-        "warning": Fore.LIGHTYELLOW_EX,
-        "process": Fore.LIGHTCYAN_EX,
-        "debug": Fore.LIGHTMAGENTA_EX
+        if not self.key:
+            raise ValueError("API Key cannot be empty. Please provide a valid key.")
+
+    def in_api(self, content, method, header=None):
+        params = f"key={self.key}&json=1&{content}"
+        headers = {'Content-Type': 'application/json'} if header else {}
+
+        try:
+            if method == "GET":
+                response = requests.get(f"{self.url}in.php?{params}")
+            else:
+                response = requests.post(f"{self.url}in.php", data=params, headers=headers)
+
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error with HTTP request: {e}")
+            return None
+        except requests.exceptions.JSONDecodeError:
+            print("Error decoding JSON response.")
+            return None
+
+    def res_api(self, api_id):
+        params = f"?key={self.key}&action=get&id={api_id}&json=1"
+        try:
+            response = requests.get(f"{self.url}res.php{params}")
+            response.raise_for_status()
+           # print(f"Response content: {response.text}")
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching captcha result: {e}")
+            return None
+        except ValueError as e:
+            print(f"Error decoding JSON response: {e}")
+            return None
+
+    def solving_progress(self, xr, tmr, cap):
+        symbols = [' ─ ', ' / ', ' │ ', ' \ ']
+        a = 0
+        for _ in range(tmr * 2):  # Kurangi waktu tunggu untuk mempercepat proses
+            print(f"Bypass {cap} {xr}%{symbols[a % 4]}\r", end="")
+            time.sleep(0.05)  # Kurangi waktu tidur untuk mempercepat proses
+            if xr < 99:
+                xr += 1
+            a += 1
+        return xr
+
+    def get_result(self, data, method, header=None):
+        cap = self.filter_method(data.split('method=')[1].split('&')[0])
+        get_res = self.in_api(data, method, header)
+
+        if not get_res or not get_res.get("status"):
+            msg = get_res.get("request", "Something went wrong") if get_res else "No response"
+            print(f"Error: in_api @{self.provider} {msg}")
+            return None
+
+        api_id = get_res["request"]
+        a = 0
+
+        while True:
+            print(f"Bypass {cap} {a}% |   \r", end="")
+            result = self.res_api(api_id)
+
+            if not result:
+                print(f"[!] Failed to fetch result for {cap}")
+                return None
+
+            if result.get("request") == "CAPCHA_NOT_READY":
+                a = min(a + random.randint(10, 20), 99)  # Tambahkan lebih banyak persen untuk mempercepat proses
+                a = self.solving_progress(a, 2, cap)  # Kurangi waktu tunggu untuk mempercepat proses
+                time.sleep(10)  # Kurangi waktu tunggu untuk mempercepat proses
+                continue
+
+            if result.get("status"):
+                print(f"Bypass {cap} 100%\r")
+                time.sleep(0.5)  # Kurangi waktu tidur untuk mempercepat proses
+                print(f"[!] Bypass {cap} success")
+                return result["request"]
+
+            print(f"[!] Bypass {cap} failed")
+            return None
+
+    def filter_method(self, method):
+        mapping = {
+            "userrecaptcha": "RecaptchaV2",
+            "hcaptcha": "Hcaptcha",
+            "turnstile": "Turnstile",
+            "universal": "Ocr",
+            "base64": "Ocr",
+            "antibot": "Antibot",
+            "authkong": "Authkong",
+            "teaserfast": "Teaserfast"
+        }
+        return mapping.get(method, method)
+
+    def get_balance(self):
+        try:
+            response = requests.get(f"{self.url}res.php?action=userinfo&key={self.key}")
+            response.raise_for_status()
+            return response.json().get("balance")
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching balance: {e}")
+            return None
+
+    def recaptcha_v2(self, sitekey, pageurl):
+        if not sitekey or not pageurl:
+            print("Sitekey and pageurl must not be empty.")
+            return None
+
+        data = urlencode({"method": "userrecaptcha", "sitekey": sitekey, "pageurl": pageurl})
+        return self.get_result(data, "GET")
+
+    def hcaptcha(self, sitekey, pageurl):
+        data = urlencode({"method": "hcaptcha", "sitekey": sitekey, "pageurl": pageurl})
+        return self.get_result(data, "GET")
+
+    def turnstile(self, sitekey, pageurl):
+        data = urlencode({"method": "turnstile", "sitekey": sitekey, "pageurl": pageurl})
+        return self.get_result(data, "GET")
+
+    def ocr(self, img):
+        data = f"method=base64&body={img}"
+        return self.get_result(data, "POST")
+
+    def antibot(self, source):
+        main = source.split('data:image/png;base64,')[1].split('"')[0]
+        if not main:
+            return None
+
+        data = f"method=antibot&main={main}"
+        return self.get_result(data, "POST")
+
+
+load_dotenv()
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Load API keys from environment variables
+X_API_KEY = os.getenv("X_API_KEY", "YOUR_X_API_KEY")
+
+def generate_email(domain):
+    first_name = names.get_first_name().lower()
+    last_name = names.get_last_name().lower()
+    random_nums = ''.join(random.choices(string.digits, k=3))
+    email = f"{first_name}{last_name}{random_nums}@{domain}"
+    logging.info(f"[*] Generated email: {email}")
+    return email
+
+def generate_password():
+    length = 12  # Total length of the password
+    upper = random.choice(string.ascii_uppercase)
+    lower = ''.join(random.choices(string.ascii_lowercase, k=8))
+    digits = ''.join(random.choices(string.digits, k=2))
+    special = '@'
+    password = upper + lower + digits + special
+   # logging.info(f"[*] Generated password: {password}")
+    return password
+
+async def get_domains(max_retries=5):
+    for attempt in range(max_retries):
+        try:
+            key = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=2))
+          #  logging.info(f"[*] Fetching domains with key: {key}")
+            response = requests.get(f"https://generator.email/search.php?key={key}", timeout=30)
+
+            if response.ok:
+                json_data = response.json()
+                if isinstance(json_data, list) and json_data:
+                    return json_data
+          #  logging.warning("[!] Empty or invalid domain list.")
+        except requests.exceptions.RequestException as error:
+            logging.error(f"[!] Error fetching domains: {error}")
+        await asyncio.sleep(2)
+
+    return []
+
+async def get_otp(email, max_retries=3):
+    email_username, email_domain = email.split('@')
+    cookies = {'embx': f'[%22{email}%22]', 'surl': f'{email_domain}/{email_username}'}
+    headers = {
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     }
+
+    for inbox_num in range(1, 4):
+        for attempt in range(max_retries):
+            try:
+                logging.info(f"[*] Checking inbox {inbox_num} (Attempt {attempt + 1})...")
+                response = requests.get(f"https://generator.email/inbox{inbox_num}/", headers=headers, cookies=cookies, timeout=30)
+                
+                if response.status_code != 200:
+                   # logging.warning(f"[!] Received non-200 status code: {response.status_code}")
+                    continue
+
+                soup = BeautifulSoup(response.text, 'html.parser')
+                email_body = soup.get_text()
+
+               # logging.info(f"[*] Email content: {email_body}")
+
+                otp_match = re.search(r'\b(\d{6})\b', email_body)  # Updated regex to capture the OTP
+                if otp_match:
+                    otp = otp_match.group(1)
+                    logging.info(f"[*] OTP extracted successfully: {otp}")
+                    return otp
+                logging.warning("[!] OTP not found in email content.")
+
+            except requests.exceptions.RequestException as error:
+                logging.error(f"[!] Error checking inbox {inbox_num}: {error}")
+
+            await asyncio.sleep(20)  # Tunggu 15 detik
+
+    return None
+
+def load_proxies(filename='proxy.txt'):
+    try:
+        with open(filename, 'r') as file:
+            proxies = [proxy.strip() for proxy in file.readlines() if proxy.strip()]
+            return proxies
+    except FileNotFoundError:
+        logging.error(f"[!] Proxy file '{filename}' not found.")
+        return []
+
+async def register_account(email, password, invited_by, api_key, gunakan_proxy):
+    sitekey = "0x4AAAAAAAkhmGkb2VS6MRU0"
+    siteurlregister = "https://dashboard.teneo.pro/auth/signup"
+
+    # Create an instance of the Captcha class with the API key
+    captcha_solver = Captcha(api_key)
+    captcha_response = captcha_solver.turnstile(sitekey, siteurlregister)  # Remove await
+
+    if not captcha_response:
+        logging.error("[!] CAPTCHA solving failed, cannot proceed with registration.")
+        return {"message": "CAPTCHA solving failed"}
+
+    url = "https://auth.teneo.pro/api/signup"
+    payload = {
+        "email": email,
+        "password": password,
+        "invitedBy": invited_by,
+        "turnstileToken": captcha_response
+    }
+    headers = {"content-type": "application/json", "x-api-key": X_API_KEY}
+
+    logging.info(f"[*] Registering account with email: {email}")
+
+    proxies = load_proxies()
+    chosen_proxy = random.choice(proxies) if proxies and gunakan_proxy else None
+    proxy_dict = {"http": chosen_proxy, "https": chosen_proxy} if chosen_proxy else None
+
+    response = requests.post(url, json=payload, headers=headers, proxies=proxy_dict if gunakan_proxy else None)
     
-    log_color = colors.get(message_type, Fore.LIGHTWHITE_EX)
-    print(f"{Fore.WHITE}[{Style.DIM}{timestamp}{Style.RESET_ALL}{Fore.WHITE}] "
-          f"{Fore.WHITE}[{Fore.LIGHTYELLOW_EX}{account_status}{Fore.WHITE}] "
-          f"{log_color}{message}")
+    try:
+        return response.json()
+    except requests.exceptions.JSONDecodeError:
+        logging.error("[!] Failed to parse JSON response.")
+        return {"error": "Invalid response"}
+
+async def register_verification_code(token, verification_code, gunakan_proxy):
+    url = "https://auth.teneo.pro/api/verify-email"
+    payload = {"token": token, "verificationCode": verification_code}
+    headers = {"content-type": "application/json", "x-api-key": X_API_KEY}
+
+    logging.info("[*] Sending verification code...")
+
+    proxies = load_proxies()
+    chosen_proxy = random.choice(proxies) if proxies and gunakan_proxy else None
+    proxy_dict = {"http": chosen_proxy, "https": chosen_proxy} if chosen_proxy else None
+
+    max_retries = 3  # Number of retries
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers, proxy=proxy_dict["http"] if gunakan_proxy else None) as response:
+                    response.raise_for_status()  # Raise an error for bad responses
+                    response_json = await response.json()  # Ensure this is a JSON object
+                    if isinstance(response_json, dict) and "error" in response_json:
+                        logging.error(f"[!] Attempt {attempt + 1} failed: {response_json['error']}")
+
+                        if response_json["error"] == "Invalid verification code":
+                            return {"error": "Invalid verification code"}
+
+                        if response_json["error"] == "Account already verified":
+                            return {"error": "Account already verified"}
+
+                    return response_json
+        except aiohttp.ClientError as e:
+            logging.error(f"[!] Attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)  # Wait before retrying
+        except json.JSONDecodeError:
+            logging.error("[!] Failed to parse JSON response.")
+            return {"error": "Invalid response"}
+        except Exception as e:
+            logging.error(f"[!] Unexpected error: {e}")
+            return {"error": str(e)}
+
+    logging.error("[!] All attempts to send the verification code failed.")
+    return {"error": "Failed to send verification code after retries."}
+
+async def farming(access_token):
+    url = f"wss://secure.ws.teneo.pro/websocket?accessToken={access_token}&version=v0.2"
+    
+    async with websockets.connect(url) as websocket:
+        # Send a PING message once
+        await websocket.send('{"type":"PING"}')
+        logging.info("[*] PING message sent.")
+
+        # Wait for a response
+        response = await websocket.recv()
+        logging.info(f"[*] Message received: {response}")
 
 def generate_ethereum_wallet():
     private_key = '0x' + secrets.token_hex(32)
@@ -44,565 +343,124 @@ def generate_ethereum_wallet():
         'address': account.address,
         'private_key': private_key
     }
-
 def create_wallet_signature(wallet, message):
+    # Create a signature using the wallet's private key
     account = Account.from_key(wallet['private_key'])
-    signable_message = encode_defunct(text=message)
-    signed_message = account.sign_message(signable_message)
+    signed_message = account.sign_message(encode_defunct(text=message))
     return signed_message.signature.hex()
 
-class TeneoAutoref:
-    def __init__(self, ref_code):
-        self.ua = UserAgent()
-        self.session = requests.Session()
-        self.ref_code = ref_code
-        self.socket = None
-        self.ping_interval = None
-        self.countdown_interval = None
-        self.potential_points = 0
-        self.countdown = "Calculating..."
-        self.points_total = 0
-        self.points_today = 0
+def log_message(message, level):
+    if level == "process":
+        logging.info(f"[PROCESS] {message}")
+    elif level == "success":
+        logging.info(f"[SUCCESS] {message}")
+    elif level == "error":
+        logging.error(f"[ERROR] {message}")
+    elif level == "warning":
+        logging.warning(f"[WARNING] {message}")
+    elif level == "info":
+        logging.info(f"[INFO] {message}")
+
+async def link_wallet(access_token, email):
+    logging.info("[*] Generating wallet and linking...")
     
-    def make_request(self, method, url, **kwargs):
-        try:
-            #log_message(self.current_num, self.total, f"Making {method} request to {url}", "debug")
-            response = requests.request(method, url, **kwargs)
-            response.raise_for_status()
-            return response
-        except requests.exceptions.RequestException as e:
-            log_message(self.current_num, self.total, f"Request failed: {str(e)}", "error")
-            return None
-
-    def get_random_domain(self):
-        log_message(self.current_num, self.total, "Searching for available email domain...", "process")
-        vowels = 'aeiou'
-        consonants = 'bcdfghjklmnpqrstvwxyz'
-        keyword = random.choice(consonants) + random.choice(vowels)
-        
-        headers = {'User-Agent': self.ua.random}
-        response = self.make_request('GET', f'https://generator.email/search.php?key={keyword}', headers=headers, timeout=60)
-        
-        if not response:
-            return None
-            
-        domains = response.json()
-        valid_domains = [d for d in domains if all(ord(c) < 128 for c in d)]
-        
-        if valid_domains:
-            selected_domain = random.choice(valid_domains)
-            log_message(self.current_num, self.total, f"Selected domain: {selected_domain}", "success")
-            return selected_domain
-            
-        log_message(self.current_num, self.total, "Could not find valid domain", "error")
-        return None
-
-    def generate_email(self, domain):
-        log_message(self.current_num, self.total, "Generating email address...", "process")
-        first_name = names.get_first_name().lower()
-        last_name = names.get_last_name().lower()
-        random_nums = ''.join(random.choices(string.digits, k=3))
-        
-        separator = random.choice(['', '.'])
-        email = f"{first_name}{separator}{last_name}{random_nums}@{domain}"
-        log_message(self.current_num, self.total, f"Email created: {email}", "success")
-        return email
-
-    def generate_password(self):
-        log_message(self.current_num, self.total, "Generating password...", "process")
-        first_letter = random.choice(string.ascii_uppercase)
-        lower_letters = ''.join(random.choices(string.ascii_lowercase, k=4))
-        numbers = ''.join(random.choices(string.digits, k=3))
-        password = f"{first_letter}{lower_letters}@{numbers}"
-        log_message(self.current_num, self.total, "Password created successfully", "success")
-        return password
-
-    def check_user_exists(self, email):
-        log_message(self.current_num, self.total, "Checking email availability...", "process")
-        headers = {
-            "accept": "application/json, text/plain, */*",
-            "content-type": "application/json",
-            "x-api-key": "OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjB",
-            "user-agent": self.ua.random,
-            "origin": "https://dashboard.teneo.pro",
-            "referer": "https://dashboard.teneo.pro/"
-        }
-        
-        # Log the email and headers for debugging
-        #log_message(self.current_num, self.total, f"Checking email: {email}", "debug")
-        #log_message(self.current_num, self.total, f"Request Headers: {headers}", "debug")
-        
-        check_url = "https://auth.teneo.pro/api/check-user-exists"
-        response = self.make_request('POST', check_url, headers=headers, json={"email": email}, timeout=60)
-        
-        if response and response.status_code == 200:
-            exists = response.json().get("exists", False)
-            if exists:
-                log_message(self.current_num, self.total, "Email already registered", "error")
-            else:
-                log_message(self.current_num, self.total, "Email is available", "success")
-            return exists
-        else:
-            log_message(self.current_num, self.total, "Failed to check email availability", "error")
-            return True
-
-    def generate_valid_credentials(self):
-        max_attempts = 5
-        for attempt in range(max_attempts):
-            domain = self.get_random_domain()
-            if not domain:
-                continue
-
-            email = self.generate_email(domain)
-            if not self.check_user_exists(email):
-                return domain, email, self.generate_password()
-            
-            log_message(self.current_num, self.total, f"Retrying with new credentials (Attempt {attempt + 1}/{max_attempts})", "warning")
-        
-        return None, None, None
-
-    def register_account(self, email, password):
-        log_message(self.current_num, self.total, "Registering account...", "process")
-        headers = {
-            "accept": "*/*",
-            "content-type": "application/json;charset=UTF-8",
-            "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlra25uZ3JneHV4Z2pocGxicGV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjU0MzgxNTAsImV4cCI6MjA0MTAxNDE1MH0.DRAvf8nH1ojnJBc3rD_Nw6t1AV8X_g6gmY_HByG2Mag",
-            "authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlra25uZ3JneHV4Z2pocGxicGV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjU0MzgxNTAsImV4cCI6MjA0MTAxNDE1MH0.DRAvf8nH1ojnJBc3rD_Nw6t1AV8X_g6gmY_HByG2Mag",
-            "user-agent": self.ua.random,
-            'Origin': 'https://dashboard.teneo.pro',
-            'Referer': 'https://dashboard.teneo.pro/'            
-        }
-        
-        register_data = {
-            "email": email,
-            "password": password,
-            "data": {"invited_by": self.ref_code},
-            "gotrue_meta_security": {},
-            "code_challenge": None,
-            "code_challenge_method": None
-        }
-        
-        # Update URL to include redirect_to parameter
-        register_url = "https://node-b.teneo.pro/auth/v1/signup?redirect_to=https%3A%2F%2Fdashboard.teneo.pro%2Fauth%2Fverify"
-        response = self.make_request('POST', register_url, headers=headers, json=register_data, timeout=60)
-        
-        if not response:
-            return {"role": None}
-            
-        result = response.json()
-        
-        if result.get("role") == "authenticated":
-            log_message(self.current_num, self.total, "Registration successful", "success")
-        else:
-            log_message(self.current_num, self.total, "Registration failed", "error")
-        return result
-
-    def get_verification_link(self, email, domain):
-        log_message(self.current_num, self.total, "Waiting for verification email...", "process")
-        cookies = {
-            'embx': f'[%22{email}%22]',
-            'surl': f'{domain}/{email.split("@")[0]}'
-        }
-        headers = {'User-Agent': self.ua.random}
-        
-        max_attempts = 5
-        for attempt in range(max_attempts):
-            log_message(self.current_num, self.total, f"Attempting to get verification link (Attempt {attempt + 1}/{max_attempts})...", "process")
-            response = self.make_request('GET', 'https://generator.email/inbox1/', headers=headers, cookies=cookies, timeout=120)
-            
-            if not response:
-                log_message(self.current_num, self.total, "No response, waiting 30 seconds before retrying...", "debug")
-                time.sleep(30)  # Wait for 30 seconds before retrying
-                continue
-                
-            soup = BeautifulSoup(response.text, 'html.parser')
-            verify_link = soup.find('a', string="Confirm Sign Up")
-            
-            if verify_link and 'href' in verify_link.attrs:
-                log_message(self.current_num, self.total, "Verification link found", "success")
-                return verify_link['href']
-
-            log_message(self.current_num, self.total, "Verification link not found, waiting 30 seconds before retrying...", "debug")
-            time.sleep(30)  # Wait for 30 seconds before retrying
-
-        log_message(self.current_num, self.total, "Could not find verification link", "error")
-        return None
-
-    def verify_email(self, verification_url):
-        log_message(self.current_num, self.total, f"Verifying email with URL: {verification_url}", "process")
-        
-        try:
-            response = self.make_request('GET', verification_url, headers={'User-Agent': self.ua.random}, timeout=120)
-            
-            if not response:
-                log_message(self.current_num, self.total, "Verification request failed", "error")
-                return False
-            
-            # Log the full response text for debugging
-            #log_message(self.current_num, self.total, f"Full verification response: {response.text}", "debug")
-            
-            # Cek respons dari API
-            #log_message(self.current_num, self.total, f"Verification response: {response.status_code} - {response.text[:200]}", "debug")  # Log hanya sebagian teks untuk menghindari terlalu panjang
-            
-            # Periksa apakah verifikasi berhasil berdasarkan status kode dan konten HTML
-            if response.status_code == 200 and "<title>Teneo Dashboard</title>" in response.text:
-                log_message(self.current_num, self.total, "Email verification successful", "success")
-                return True
-            else:
-                log_message(self.current_num, self.total, "Email verification failed", "error")
-                return False
-        
-        except requests.exceptions.RequestException as e:
-            log_message(self.current_num, self.total, f"Verification request exception: {str(e)}", "error")
-            return False
-
-    def login(self, email, password):
-        log_message(self.current_num, self.total, "Attempting login...", "process")
-        headers = {
-            'accept': 'application/json, text/plain, */*',
-            'content-type': 'application/json',
-            'x-api-key': 'OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjB',
-            'user-agent': self.ua.random,
-            'Origin': 'https://dashboard.teneo.pro',
-            'Referer': 'https://dashboard.teneo.pro/'
-        }
-        
-        login_data = {
-            "email": email,
-            "password": password
-        }
-        
-        response = self.make_request('POST', 'https://auth.teneo.pro/api/login', headers=headers, json=login_data, timeout=120)
-                                   
-        if not response:
-            return {}
-            
-        result = response.json()
-        
-        if "access_token" in result:
-            log_message(self.current_num, self.total, "Login successful", "success")
-        else:
-            log_message(self.current_num, self.total, "Login failed", "error")
-        return result
-
-    def link_wallet(self, access_token, email):
-        log_message(self.current_num, self.total, "Generating wallet and linking...", "process")
-        
-        wallet = generate_ethereum_wallet()
-        
-        message = f"Permanently link wallet to Teneo account: {email} This can only be done once."
-        signature = create_wallet_signature(wallet, message)
-        
-        
-        headers = {
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Authorization': f'Bearer {access_token}',
-            'Connection': 'keep-alive',
-            'Content-Type': 'application/json',
-            'Origin': 'https://dashboard.teneo.pro',
-            'Referer': 'https://dashboard.teneo.pro/',
-            'User-Agent': self.ua.random,
-            'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"'
-        }
-        
-        if not signature.startswith('0x'):
-            signature = '0x' + signature
-        
-        link_data = {
-            "address": wallet['address'],
-            "signature": signature,
-            "message": message
-        }
-        
-        try:
-            response = self.make_request('POST', 'https://api.teneo.pro/api/users/link-wallet', headers=headers, json=link_data, timeout=60)
-            
-            if not response:
-                return None
-                
-            result = response.json()
-
-            if result.get("success"):
-                log_message(self.current_num, self.total, f"{result.get('message')}: {Fore.MAGENTA}{wallet['address']}{Fore.RESET}", "success")
-                return wallet
-            else:
-                log_message(self.current_num, self.total, f"{result.get('message', 'Unknown error')}", "error")
-                return None
-                
-        except Exception as e:
-            log_message(self.current_num, self.total, f"Error linking wallet: {str(e)}", "error")
-            return None
-
-    # Tambahan kode untuk WebSocket dan penyimpanan asinkron
-    async def read_file_async(self, file_path):
-        try:
-            async with aiofiles.open(file_path, 'r') as f:
-                return json.loads(await f.read())
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
-
-    async def write_file_async(self, file_path, data):
-        async with aiofiles.open(file_path, 'w') as f:
-            await f.write(json.dumps(data))
-
-    async def set_local_storage(self, data):
-        current_data = await self.read_file_async('localStorage.json')
-        new_data = {**current_data, **data}
-        await self.write_file_async('localStorage.json', new_data)
-
-    async def connect_websocket(self, access_token):
-        if self.socket:
-            return
-        version = "v0.2"
-        url = "wss://secure.ws.teneo.pro"
-        ws_url = f"{url}/websocket?accessToken={access_token}&version={version}"
-        self.socket = await websockets.connect(ws_url)
-
-        async def on_open():
-            connection_time = asyncio.get_event_loop().time()
-            await self.set_local_storage({'lastUpdated': connection_time})
-            log_message(self.current_num, self.total, f"WebSocket connected at {connection_time}", "info")
-            self.start_pinging()
-            await self.start_countdown_and_points()
-
-        async def on_message():
-            async for message in self.socket:
-                data = json.loads(message)
-                log_message(self.current_num, self.total, f"Received message from WebSocket: {data}", "info")
-                if 'pointsTotal' in data and 'pointsToday' in data:
-                    last_updated = asyncio.get_event_loop().time()
-                    await self.set_local_storage({
-                        'lastUpdated': last_updated,
-                        'pointsTotal': data['pointsTotal'],
-                        'pointsToday': data['pointsToday'],
-                    })
-                    self.points_total = data['pointsTotal']
-                    self.points_today = data['pointsToday']
-                
-                if 'message' in data:
-                    log_message(self.current_num, self.total, f"Pesan: {data['message']}", "info")
-                    if data['message'] == "Connected successfully":
-                        self.stop_pinging()
-                        await self.socket.close()  # Close the WebSocket connection
-                        log_message(self.current_num, self.total, "WebSocket disconnected after successful connection message", "info")
-                        return  # Exit the message loop
-
-        async def on_close():
-            self.socket = None
-            log_message(self.current_num, self.total, "WebSocket disconnected", "info")
-            self.stop_pinging()
-            # Removed reconnect_websocket call
-
-        async def on_error(error):
-            log_message(self.current_num, self.total, f"WebSocket error: {error}", "error")
-            # Removed reconnect_websocket call
-
-        await on_open()
-        try:
-            await on_message()
-        except Exception as e:
-            await on_error(e)
-        finally:
-            await on_close()
-
-    def start_pinging(self):
-        self.stop_pinging()
-        self.ping_interval = asyncio.get_event_loop().call_later(10, lambda: asyncio.create_task(self.ping()))
-
-    def stop_pinging(self):
-        self.ping_interval = None
-
-    async def ping(self):
-        if self.socket and self.socket.open:  # Periksa apakah socket masih terbuka
-            await self.socket.send(json.dumps({'type': 'PING'}))
-            await self.set_local_storage({'lastPingDate': asyncio.get_event_loop().time()})
-        self.start_pinging()
-
-    async def update_countdown_and_points(self):
-        local_storage = await self.read_file_async('localStorage.json')
-        last_updated = local_storage.get('lastUpdated')
-        if (last_updated):
-            next_heartbeat = last_updated + 15 * 60
-            now = asyncio.get_event_loop().time()
-            diff = next_heartbeat - now
-
-            if diff > 0:
-                minutes = int(diff // 60)
-                seconds = int(diff % 60)
-                self.countdown = f"{minutes}m {seconds}s"
-
-                max_points = 25
-                time_elapsed = now - last_updated
-                time_elapsed_minutes = time_elapsed / 60
-                new_points = min(max_points, (time_elapsed_minutes / 15) * max_points)
-                new_points = round(new_points, 2)
-
-                if random.random() < 0.1:
-                    bonus = random.uniform(0, 2)
-                    new_points = min(max_points, new_points + bonus)
-                    new_points = round(new_points, 2)
-
-                self.potential_points = new_points
-            else:
-                self.countdown = "Calculating..."
-                self.potential_points = 25
-        else:
-            self.countdown = "Calculating..."
-            self.potential_points = 0
-
-        await self.set_local_storage({'potentialPoints': self.potential_points, 'countdown': self.countdown})
-
-    async def start_countdown_and_points(self):
-        if self.countdown_interval:
-            self.countdown_interval.cancel()
-        await self.update_countdown_and_points()
-        self.countdown_interval = asyncio.get_event_loop().call_later(1, lambda: asyncio.create_task(self.update_countdown_and_points()))
+    wallet = generate_ethereum_wallet()
     
-    # fungsi untuk menyimpan token ke file tokens.txt
-    async def save_access_token_to_file(self, access_token):
-        async with aiofiles.open('tokens.txt', 'a') as f:
-            await f.write(access_token + '\n')
-
-    async def start_running_node(self, access_token):
-        await self.save_access_token_to_file(access_token)
-        #print('Access token saved to tokens.txt')
-        await self.start_countdown_and_points()
-        await self.connect_websocket(access_token)
-
-    def check_user_onboarded(self, access_token):
-        log_message(self.current_num, self.total, "Checking account activate status...", "process")
-        headers = {
-            'accept': 'application/json, text/plain, */*',
-            'authorization': f'Bearer {access_token}',
-            'connection': 'keep-alive',
-            'origin': 'https://dashboard.teneo.pro',
-            'referer': 'https://dashboard.teneo.pro/',
-            'user-agent': self.ua.random,
-            'accept-encoding': 'gzip, deflate, br, zstd',
-            'accept-language': 'en-GB,en;q=0.9',
-            'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-site'
-        }
-        
-        max_attempts = 5
-        for attempt in range(max_attempts):
-            response = self.make_request('GET', 'https://api.teneo.pro/api/users/user-onboarded', headers=headers, timeout=60)
-            
-            if response:
-                response_data = response.json()
-                if response_data.get('success') == True:
-                    log_message(self.current_num, self.total, "Account Activated! But still PENDING", "success")
-                    log_message(self.current_num, self.total, f"{Fore.LIGHTYELLOW_EX}IMPORTANT: Run accounts with teneo-bot until 100HB for SUCCESS referral{Fore.RESET}", "success")
-                    return True
+    message = f"Permanently link wallet to Teneo account: {email}. This can only be done once."
+    signature = create_wallet_signature(wallet, message)
+    
+    headers = {
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Authorization': f'Bearer {access_token}',
+        'Connection': 'keep-alive',
+        'Content-Type': 'application/json',
+        'Origin': 'https://dashboard.teneo.pro',
+        'Referer': 'https://dashboard.teneo.pro/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+        'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"'
+    }
+    
+    if not signature.startswith('0x'):
+        signature = '0x' + signature
+    
+    link_data = {
+        "address": wallet['address'],
+        "signature": signature,
+        "message": message
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post('https://api.teneo.pro/api/users/link-wallet', headers=headers, json=link_data, timeout=60) as response:
+                response.raise_for_status()  # Raise an error for bad responses
+                response_json = await response.json()  # Ensure this is a JSON object
+                if isinstance(response_json, dict) and "success" in response_json:
+                    logging.info(f"[*] {response_json.get('message')}: {wallet['address']}")
+                    return wallet
                 else:
-                    log_message(self.current_num, self.total, f"Response: {response_data}", "debug")
-            
-            log_message(self.current_num, self.total, f"User not yet activated, Please wait...", "warning")
-            time.sleep(20)
+                    logging.error(f"{response_json.get('message', 'Unknown error')}")
+                    return None
+    except aiohttp.ClientError as e:
+        logging.error(f"Error linking wallet: {e}")
+        return None
 
-        log_message(self.current_num, self.total, "Failed to verify user activation", "error")
-        return False
-
-    def create_account(self, current_num, total):
-        self.current_num = current_num
-        self.total = total
-        
-        domain, email, password = self.generate_valid_credentials() 
-        if not email:
-            return None, "Could not generate valid credentials after multiple attempts"
-
-        register_response = self.register_account(email, password)
-        if register_response.get("role") != "authenticated":
-            return None, "Registration failed"
-
-        verification_url = self.get_verification_link(email, domain)
-        if not verification_url:
-            return None, "Could not get verification link"
-
-        if not self.verify_email(verification_url):
-            return None, "Email verification failed"
-
-        login_response = self.login(email, password)
-        if "access_token" not in login_response:
-            return None, "Login failed"
-            
-        access_token = login_response["access_token"]
-        wallet = self.link_wallet(access_token, email) 
-        if not wallet:
-            return None, "Wallet linking failed"
-        
-        # Start running node with the access token from login
-        asyncio.run(self.start_running_node(access_token))
-
-        if not self.check_user_onboarded(access_token):
-            return None, "Account active validation failed"
-
-        return {
-            "email": email,
-            "password": password,
-            "access_token": access_token,
-            "wallet_private_key": wallet['private_key'],
-            "wallet_address": wallet['address']
-        }, "Success"
-
-def main():
-    banner = f"""
-{Fore.LIGHTCYAN_EX}╔═══════════════════════════════════════════╗
-║            Teneo Autoreferral             ║
-║       https://github.com/im-hanzou        ║
-║  Update by https://t.me/AirdropFamilyIDN  ║
-╚═══════════════════════════════════════════╝{Style.RESET_ALL}
-"""
-    print(banner)    
+async def main():
+    print("Teneo Auto Referral By @AirdropFamilyIDN")
+    print("[*] Register api_key      : https://t.me/Xevil_check_bot?start=6953912161")
+    api_key = input("[*] Enter your API Key    : ")
+    invited_by = input("[*] Input your invite code: ")
+    jumlah_interasi = int(input("[*] Mau Berapa Referral   : "))
+    gunakan_proxy = input("[*] Gunakan proxy? (y/n)  : ").lower() == 'y'
     
-    ref_code = input(f"{Fore.LIGHTYELLOW_EX}Enter referral code, example : HyPYD: {Fore.RESET}")
-    count = int(input(f"{Fore.LIGHTYELLOW_EX}How many referrals?: {Fore.RESET}"))
-    
-    successful = 0
-    
-    if not os.path.exists("accounts.txt"):
-        with open("accounts.txt", "w") as f:
-            pass
-    
-    with open("accounts.txt", "a") as f:
-        for i in range(count):
-            print(f"{Fore.LIGHTWHITE_EX}{'-'*85}")
-            log_message(i+1, count, "Starting new referral process", "debug")
+    domains = await get_domains()
+    if not domains:
+        logging.error("[!] Failed to fetch domains!")
+        return
 
-            generator = TeneoAutoref(ref_code)
-            account, message = generator.create_account(i+1, count)
-            
-            if account:
-                with open("accounts.txt", "a") as f:
-                    f.write(f"Email     : {account['email']}\n")
-                    f.write(f"Password  : {account['password']}\n")
-                    f.write(f"Privatekey: {account['wallet_private_key']}\n")
-                    f.write(f"Address   : {account['wallet_address']}\n")
-                    f.write(f"Points    : 51000\n")
-                    f.write("-" * 85 + "\n")
-                    f.flush()
-                successful += 1
-                log_message(i+1, count, "Account created successfully!", "debug")
-                log_message(i+1, count, f"Points        : 51000", "success")
-                log_message(i+1, count, f"{Fore.LIGHTRED_EX}Link Bot : https://github.com/im-hanzou/teneo-bot{Fore.RESET}", "success")
-                log_message(i+1, count, f"{Fore.LIGHTRED_EX}Update by: https://t.me/AirdropFamilyIDN{Fore.RESET}", "success")
-                log_message(i+1, count, f"{Fore.LIGHTRED_EX}Please ensure that all successfully referred accounts run teneo-bot{Fore.RESET}", "success")  
+    total_sukses = 0
+    total_gagal = 0
+    for _ in range(jumlah_interasi):
+        print(f"\n[*] Proses Referral {_+1}/{jumlah_interasi}")
+        domain = random.choice(domains)
+        email = generate_email(domain)
+        password = generate_password()
+
+        response = await register_account(email, password, invited_by, api_key, gunakan_proxy)
+
+        token = response.get('token')
+        if not token:
+            logging.error("[!] No token received. Registration failed.")
+            total_gagal += 1
+            continue
+
+        otp = await get_otp(email)
+        if otp:
+            verification_response = await register_verification_code(token, otp, gunakan_proxy)
+            if isinstance(verification_response, dict):
+                access_token = verification_response.get('access_token')
+                if access_token:
+                    wallet = await link_wallet(access_token, email)
+                    if wallet:
+                        with open("akuns.txt", "a") as f:
+                            f.write(f"{email}:{password}:{access_token}:{wallet['private_key']}\n")
+                            f.flush()
+                            logging.info("[*] Referral Sukses...")
+                            logging.info("[*] Access token and private key saved to akuns.txt")
+                        total_sukses += 1
+                        await farming(access_token)
             else:
-                log_message(i+1, count, f"Failed: {message}", "error")
-    
-    print(f"{Fore.MAGENTA}\n[*] Process completed!{Fore.RESET}")
-    print(f"{Fore.GREEN}[*] Successfully created {successful} out of {count} accounts{Fore.RESET}")
-    print(f"{Fore.MAGENTA}[*] Results saved in accounts.txt{Fore.RESET}")
+                logging.error(f"[!] Verification failed: {verification_response}")
+                total_gagal += 1
+
+    print()
+    logging.info(f"[*] Total referral sukses: {total_sukses}")
+    logging.info(f"[*] Total referral gagal : {total_gagal}")
 
 if __name__ == "__main__":
     try:
-        main()
-    except KeyboardInterrupt:
-        print(f"\n{Fore.LIGHTYELLOW_EX}Process interrupted by user.")
+        asyncio.run(main())
+    except Exception as e:
+        logging.error(f"[!] An error occurred: {e}")
