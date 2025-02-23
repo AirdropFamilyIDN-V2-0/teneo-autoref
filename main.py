@@ -6,7 +6,6 @@ from bs4 import BeautifulSoup
 from faker import Faker
 import re
 import names
-from dotenv import load_dotenv
 import os
 from curl_cffi import requests
 import time
@@ -18,6 +17,7 @@ import secrets
 import logging
 import aiohttp
 import json
+import signal
 
 class Captcha:
     def __init__(self, api_key):
@@ -179,13 +179,12 @@ class Captcha:
         return self.get_result(data, "POST")
 
 
-load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Load API keys from environment variables
-X_API_KEY = os.getenv("X_API_KEY", "YOUR_X_API_KEY")
+X_API_KEY = "OwAG3kib1ivOJG4Y0OCZ8lJETa6ypvsDtGmdhcjB"
 
 def generate_email(domain):
     first_name = names.get_first_name().lower()
@@ -260,16 +259,7 @@ async def get_otp(email, max_retries=3):
 
     return None
 
-def load_proxies(filename='proxy.txt'):
-    try:
-        with open(filename, 'r') as file:
-            proxies = [proxy.strip() for proxy in file.readlines() if proxy.strip()]
-            return proxies
-    except FileNotFoundError:
-        logging.error(f"[!] Proxy file '{filename}' not found.")
-        return []
-
-async def register_account(email, password, invited_by, api_key, gunakan_proxy):
+async def register_account(email, password, invited_by, api_key):
     sitekey = "0x4AAAAAAAkhmGkb2VS6MRU0"
     siteurlregister = "https://dashboard.teneo.pro/auth/signup"
 
@@ -292,37 +282,26 @@ async def register_account(email, password, invited_by, api_key, gunakan_proxy):
 
     logging.info(f"[*] Registering account with email: {email}")
 
-    proxies = load_proxies()
-    chosen_proxy = random.choice(proxies) if proxies and gunakan_proxy else None
-    proxy_dict = {"http": chosen_proxy, "https": chosen_proxy} if chosen_proxy else None
-
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers, proxy=proxy_dict["http"] if gunakan_proxy and proxy_dict else None) as response:
-            logging.info(f"[*] Response status code: {response.status}")
-            logging.info(f"[*] Response text: {await response.text()}")
+        async with session.post(url, json=payload, headers=headers) as response:
+            response_json = await response.json()
+            if "error" in response_json:
+                logging.error(f"[!] Registration failed: {response_json['error']}")
 
-            try:
-                return await response.json()
-            except aiohttp.ClientError as e:
-                logging.error("[!] Failed to parse JSON response.")
-                return {"error": "Invalid response"}
+            return response_json
 
-async def register_verification_code(token, verification_code, gunakan_proxy):
+async def register_verification_code(token, verification_code):
     url = "https://auth.teneo.pro/api/verify-email"
     payload = {"token": token, "verificationCode": verification_code}
     headers = {"content-type": "application/json", "x-api-key": X_API_KEY}
 
     logging.info("[*] Sending verification code...")
 
-    proxies = load_proxies()
-    chosen_proxy = random.choice(proxies) if proxies and gunakan_proxy else None
-    proxy_dict = {"http": chosen_proxy, "https": chosen_proxy} if chosen_proxy else None
-
     max_retries = 3  # Number of retries
     for attempt in range(max_retries):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers, proxy=proxy_dict["http"] if gunakan_proxy else None) as response:
+                async with session.post(url, json=payload, headers=headers) as response:
                     response.raise_for_status()  # Raise an error for bad responses
                     response_json = await response.json()  # Ensure this is a JSON object
                     if isinstance(response_json, dict) and "error" in response_json:
@@ -437,7 +416,6 @@ async def main():
     api_key = input("[*] Enter your API Key    : ")
     invited_by = input("[*] Input your invite code: ")
     jumlah_interasi = int(input("[*] Mau Berapa Referral   : "))
-    gunakan_proxy = input("[*] Gunakan proxy? (y/n)  : ").lower() == 'y'
     
     domains = await get_domains()
     if not domains:
@@ -452,7 +430,7 @@ async def main():
         email = generate_email(domain)
         password = generate_password()
 
-        response = await register_account(email, password, invited_by, api_key, gunakan_proxy)
+        response = await register_account(email, password, invited_by, api_key)
 
         token = response.get('token')
         if not token:
@@ -462,7 +440,7 @@ async def main():
 
         otp = await get_otp(email)
         if otp:
-            verification_response = await register_verification_code(token, otp, gunakan_proxy)
+            verification_response = await register_verification_code(token, otp)
             if isinstance(verification_response, dict):
                 access_token = verification_response.get('access_token')
                 if access_token:
@@ -486,5 +464,7 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nTerminate by user.")
     except Exception as e:
         logging.error(f"[!] An error occurred: {e}")
